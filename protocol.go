@@ -1,17 +1,23 @@
 package achicken
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 )
 
-// CmdSerial represents a serialized command.
+// CmdSerial represents a 32bit serialized command.
 type CmdSerial [6]byte
 
 func NewCommand(verb, noun uint16) (cmd CmdSerial) {
 	binary.LittleEndian.PutUint16(cmd[0:2], verb)
 	binary.LittleEndian.PutUint16(cmd[2:4], noun)
-	cmd.SetCRC(cmd.CalculateCRC())
+	crc := cmd.CalculateCRC()
+	cmd.SetCRC(crc)
+	if cmd.CRC() != crc {
+		panic("achicken fatal: CRC was not set/unmarshalled correctly")
+	}
 	return cmd
 }
 
@@ -21,20 +27,41 @@ var (
 	ErrBufferEmpty       = errors.New("serial buffer empty")
 )
 
-func (c *CmdSerial) ReadNext(serialer interface {
+type Serialer interface {
 	Buffered() int
 	ReadByte() (byte, error)
-}) error {
+}
+
+var initiator = []byte{'{'}
+
+// WriteTo marshals CmdSerial onto the writer in binary format.
+func (c *CmdSerial) WriteTo(w io.Writer) (int64, error) {
+	_, err := w.Write(initiator)
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(c[:])
+	return int64(n + 1), err
+}
+
+func (c *CmdSerial) ReadNext(serialer Serialer) error {
 	n := serialer.Buffered()
 	if n == 0 {
 		return ErrBufferEmpty
 	}
+	if n < len(CmdSerial{}) {
+		return ErrCmdSerialNotFound // Not enough data to form a command. wait for more data.
+	}
 	serIdx := -1
 	for i := 0; i < n; i++ {
+		isLast := i == n-1
 		b, err := serialer.ReadByte()
 		switch {
-		case err != nil:
+		case err != nil && !(isLast && err == io.EOF):
 			return err
+		case serIdx == -1 && n-i < len(CmdSerial{}):
+			// Not enough data in buffer to form a command, wait for more data.
+			return ErrCmdSerialNotFound
 		case b == '{' && serIdx == -1:
 			// Command start found.
 			serIdx = 0
@@ -121,4 +148,81 @@ var crcTable = [256]CRC{
 	0x1AD0, 0x2AB3, 0x3A92, 0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9, 0x7C26, 0x6C07,
 	0x5C64, 0x4C45, 0x3CA2, 0x2C83, 0x1CE0, 0x0CC1, 0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9,
 	0x9FF8, 0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0,
+}
+
+// ReaderFromSerialer is probably not a good idea. Use only for debugging.
+func ReaderFromSerialer(s Serialer) io.Reader {
+	return serialReader{s: s}
+}
+
+type serialReader struct {
+	s Serialer
+}
+
+func (r serialReader) Read(b []byte) (int, error) {
+	n := r.s.Buffered()
+	if n == 0 {
+		// Should io.EOF be returned in this case? Nil? ErrBufferEmpty? Dunno.
+		return 0, io.EOF
+	} else if n > len(b) {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		char, err := r.s.ReadByte()
+		if err != nil {
+			return i, err
+		}
+		b[i] = char
+	}
+	return n, nil
+}
+
+func SerializeBytes(buf []byte) Serialer {
+	return &byteSerialer{buf: buf}
+}
+
+type byteSerialer struct {
+	buf []byte
+}
+
+func (b *byteSerialer) Buffered() int {
+	return len(b.buf)
+}
+
+func (b *byteSerialer) ReadByte() (byte, error) {
+	if b.Buffered() == 0 {
+		b.buf = nil
+		return 0, ErrBufferEmpty
+	}
+	char := b.buf[0]
+	b.buf = b.buf[1:]
+	return char, nil
+}
+
+func SerialerFromReader(r io.Reader) Serialer {
+	return &serialerReader{
+		r: r,
+	}
+}
+
+type serialerReader struct {
+	r   io.Reader
+	buf bytes.Buffer
+}
+
+func (r *serialerReader) ReadByte() (byte, error) {
+	return r.buf.ReadByte()
+}
+
+func (r *serialerReader) Buffered() int {
+	var inbuf [64]byte
+	n := 1
+	i := 0
+	var err error
+	for err == nil && n != 0 && i < 6 {
+		n, err = r.r.Read(inbuf[:])
+		r.buf.Write(inbuf[:n])
+		i++
+	}
+	return r.buf.Len()
 }
