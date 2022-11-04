@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strconv"
 )
 
 // CmdSerial represents a 32bit serialized command.
@@ -69,10 +70,11 @@ func (c *CmdSerial) ReadNext(serialer Serialer) error {
 			// Continue unserializing command.
 			c[serIdx] = b
 			serIdx++
-			if serIdx < len(CmdSerial{})-1 {
+			if serIdx < len(CmdSerial{}) {
 				// Command not yet fully unserialized.
 				continue
 			}
+
 			// Reset state.
 			serIdx = -1
 			if c.CalculateCRC() != c.CRC() {
@@ -106,6 +108,15 @@ func (c *CmdSerial) CRC() uint16 {
 
 func (c *CmdSerial) SetCRC(crc uint16) {
 	binary.LittleEndian.PutUint16(c[4:6], crc)
+}
+
+func (c *CmdSerial) String() string {
+	v, n := c.Command()
+	crc := c.CRC()
+	if crc != c.CalculateCRC() {
+		return "bad crc"
+	}
+	return strconv.FormatUint(uint64(v), 16) + " " + strconv.FormatUint(uint64(n), 16) + " " + strconv.FormatUint(uint64(crc), 16)
 }
 
 // CRC is a port of the OpenCyphal spec CRC.

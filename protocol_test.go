@@ -55,26 +55,22 @@ func TestLoopback(t *testing.T) {
 	var cmd CmdSerial
 	ser := SerialerFromReader(&b)
 	err = cmd.ReadNext(ser)
-	actual, ap1 := cmd.Command()
-
 	if err != nil {
-		t.Fatal(actual, ap1, cmd.CRC(), cmd.CalculateCRC(), err)
+		t.Fatal(err, &cmd)
 	}
-
-	for err != nil {
+	i := 0
+	actual, _ := cmd.Command()
+	for err == nil {
+		i++
 		err = cmd.ReadNext(ser)
 		if err != nil {
 			t.Error(err)
 		}
-		expect := actual + 2
-		got, gotp1 := cmd.Command()
-		if got != expect {
-			t.Errorf("expected command #%d, got #%d", expect, got)
+		expected := NewCommand(actual+2, actual+3)
+		if expected != cmd {
+			t.Errorf("#%d expected command (%s), got (%s)", i, &expected, &cmd)
 		}
-		if gotp1 != got+1 {
-			t.Errorf("expected noun %d to be verb+1, got %d", got+1, gotp1)
-		}
-		actual = got
+		actual += 2
 	}
 	t.Error(b.String())
 }
